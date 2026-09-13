@@ -4,13 +4,21 @@ import {
   ALGORITHM_IDS,
   ALGO_KEYS,
   ALGO_NAMES,
+  CONVERGENCE_EPSILON,
+  CONVERGENCE_WINDOW,
   type AlgoId,
   type BenchmarkParams,
   type EdgeWeights,
+  type FrameSnapshot,
   DEFAULT_PARAMS,
 } from "@/sim/engine";
 import { INSTANCES, type InstanceName } from "@/sim/instances";
-import { runPythonTrial, isTauri, type PythonTrialResult } from "@/lib/native";
+import {
+  runPythonTrial,
+  isTauri,
+  type PythonTrialResult,
+  type PythonTourSnapshot,
+} from "@/lib/native";
 
 export type RunStatus = "config" | "running" | "paused" | "completed";
 
@@ -60,6 +68,10 @@ interface RunState {
   edgeCache: Record<AlgoId, EdgeWeights>;
   flashCount: Record<AlgoId, number>;
   trials: CompletedTrial[];
+  /** Raw Python output per trial (tours included) for playback; not archived. */
+  pythonRaw: PythonTrialResult[][];
+  /** Bumps every startRun/stop so stale background fetches abort. */
+  pythonRunId: number;
 
   setInstance: (name: InstanceName) => void;
   setEngine: (engine: EngineType) => void;
@@ -87,71 +99,214 @@ function makeEngines(instanceName: InstanceName, params: BenchmarkParams, trial:
   return ALGORITHM_IDS.map((algo) => new AlgoEngine(algo, instance, params, params.seed + trial));
 }
 
+/** Normalized sparse tour snapshot: best tour known at a given frame. */
+interface NormalizedTourSnapshot {
+  frame: number;
+  tour: number[];
+}
+
+function normalizeTourSnapshots(
+  snapshots: Array<PythonTourSnapshot | [number, number[]]> | undefined,
+  n: number
+): NormalizedTourSnapshot[] {
+  if (!Array.isArray(snapshots)) return [];
+  const out: NormalizedTourSnapshot[] = [];
+  for (const s of snapshots) {
+    if (Array.isArray(s)) {
+      const [frame, tour] = s as [number, number[]];
+      if (Number.isInteger(frame) && Array.isArray(tour) && tour.length === n) {
+        out.push({ frame, tour });
+      }
+      continue;
+    }
+    const frame = (s as PythonTourSnapshot).frame;
+    const tour = (s as PythonTourSnapshot).tour;
+    if (Number.isInteger(frame) && Array.isArray(tour) && tour.length === n) {
+      out.push({ frame, tour });
+    }
+  }
+  return out.sort((a, b) => a.frame - b.frame);
+}
+
+/**
+ * Reconstruct the best-tour-at-every-frame buffer from sparse snapshots.
+ * Frames before the first snapshot stay -1 (no tour yet), matching the
+ * empty state the live engine shows before its first improvement.
+ */
+export function reconstructBestTourAt(
+  n: number,
+  tMax: number,
+  snapshots: Array<PythonTourSnapshot | [number, number[]]> | undefined,
+  bestFinal: number[] | undefined
+): Int32Array {
+  const out = new Int32Array(tMax * n).fill(-1);
+  const valid = normalizeTourSnapshots(snapshots, n);
+  let cur: number[] | null = null;
+  let idx = 0;
+  while (idx < valid.length && valid[idx].frame < 0) {
+    cur = valid[idx].tour;
+    idx++;
+  }
+  for (let f = 0; f < tMax; f++) {
+    while (idx < valid.length && valid[idx].frame <= f) {
+      cur = valid[idx].tour;
+      idx++;
+    }
+    if (cur) out.set(cur, f * n);
+  }
+  if (!cur && Array.isArray(bestFinal) && bestFinal.length === n) {
+    for (let f = 0; f < tMax; f++) out.set(bestFinal, f * n);
+  }
+  return out;
+}
+
 /**
  * Virtual engine that replays pre-computed Python results through the
- * same step()/advance() interface the TypeScript engine uses.
+ * same step()/advance() interface the TypeScript engine uses. Scalar
+ * series are revealed progressively (arrays grow on step(), mirroring
+ * AlgoEngine), while the tour buffer is pre-filled so the 3D view can
+ * slice it by frame.
  */
-class PythonPlaybackEngine {
+export class PythonPlaybackEngine {
   readonly algo: AlgoId;
   readonly n: number;
-  readonly best: number[];
-  readonly entropy: number[];
-  readonly dominance: number[];
-  readonly triggered: boolean[];
+  /** Revealed prefix of the full series (grows on step(), like AlgoEngine). */
+  readonly best: number[] = [];
+  readonly entropy: number[] = [];
+  readonly dominance: number[] = [];
+  readonly triggered: boolean[] = [];
   readonly bestTourAt: Int32Array;
   activations = 0;
-  runtimeS = 0;
 
   private frame = 0;
-  private tMax: number;
+  private readonly tMax: number;
+  private readonly fullBest: number[];
+  private readonly fullEntropy: number[];
+  private readonly fullDominance: number[];
+  private readonly fullTriggered: boolean[];
+  private readonly totalRuntimeS: number;
+  private readonly emptyTau: Float64Array;
 
-  constructor(algo: AlgoId, n: number, series: { best: number[]; entropy: number[]; dominance: number[]; triggered: boolean[] }, tMax: number, activations: number, runtimeS: number) {
+  constructor(
+    algo: AlgoId,
+    n: number,
+    series: { best: number[]; entropy: number[]; dominance: number[]; triggered: boolean[] },
+    tMax: number,
+    runtimeS: number,
+    tourSnapshots?: Array<PythonTourSnapshot | [number, number[]]>,
+    bestTourFinal?: number[]
+  ) {
     this.algo = algo;
     this.n = n;
-    this.best = series.best;
-    this.entropy = series.entropy;
-    this.dominance = series.dominance;
-    this.triggered = series.triggered;
     this.tMax = tMax;
-    this.activations = activations;
-    this.runtimeS = runtimeS;
-    this.bestTourAt = new Int32Array(tMax * n).fill(-1);
+    this.fullBest = series.best.slice(0, tMax);
+    this.fullEntropy = series.entropy.slice(0, tMax);
+    this.fullDominance = series.dominance.slice(0, tMax);
+    this.fullTriggered = series.triggered.slice(0, tMax);
+    this.totalRuntimeS = runtimeS;
+    this.bestTourAt = reconstructBestTourAt(n, tMax, tourSnapshots, bestTourFinal);
+    this.emptyTau = new Float64Array(n * n);
   }
 
   get done(): boolean {
     return this.frame >= this.tMax;
   }
 
-  step(): { frame: number; bestLen: number; entropy: number; pdr: number; triggerFired: boolean; bestTour: Int32Array; tau: Float64Array } | null {
+  get currentFrame(): number {
+    return this.frame;
+  }
+
+  /** Best tour length revealed so far (Infinity before the first frame). */
+  get currentBest(): number {
+    return this.best.length > 0 ? this.best[this.best.length - 1] : Infinity;
+  }
+
+  /** Animated engine time: total spread across playback. */
+  get runtimeS(): number {
+    if (this.tMax <= 0) return this.totalRuntimeS;
+    return (this.totalRuntimeS * Math.min(this.frame, this.tMax)) / this.tMax;
+  }
+
+  step(): FrameSnapshot | null {
     if (this.done) return null;
     const f = this.frame;
+    const bestLen = this.fullBest[f] ?? Infinity;
+    const entropy = this.fullEntropy[f] ?? 0;
+    const pdr = this.fullDominance[f] ?? 1;
+    const triggerFired = this.fullTriggered[f] ?? false;
+    this.best.push(bestLen);
+    this.entropy.push(entropy);
+    this.dominance.push(pdr);
+    this.triggered.push(triggerFired);
+    if (triggerFired) this.activations++;
     this.frame++;
     return {
       frame: f,
-      bestLen: this.best[f] ?? Infinity,
-      entropy: this.entropy[f] ?? 0,
-      pdr: this.dominance[f] ?? 1,
-      triggerFired: this.triggered[f] ?? false,
-      bestTour: new Int32Array(this.n),
-      tau: new Float64Array(this.n * this.n),
+      bestLen,
+      entropy,
+      pdr,
+      triggerFired,
+      bestTour: Int32Array.from(this.bestTourAt.slice(f * this.n, f * this.n + this.n)),
+      tau: this.emptyTau,
     };
   }
 
   convergenceIteration(): number {
-    for (let t = 20; t < this.best.length; t++) {
-      const prev = this.best[t - 20];
-      if (prev > 0 && (prev - this.best[t]) / prev <= 0.001) return t;
+    const h = this.fullBest;
+    for (let t = CONVERGENCE_WINDOW; t < h.length; t++) {
+      const prev = h[t - CONVERGENCE_WINDOW];
+      if (prev > 0 && (prev - h[t]) / prev <= CONVERGENCE_EPSILON) return t;
     }
-    return this.best.length;
+    return h.length;
   }
 
-  strongEdges(): EdgeWeights {
-    return { i: new Int32Array(0), j: new Int32Array(0), w: new Float32Array(0), count: 0 };
+  /** Trails derived from the currently revealed best tour (tour loop edges). */
+  strongEdges(cap = 400): EdgeWeights {
+    const f = Math.max(0, Math.min(this.frame, this.tMax) - 1);
+    const slice = this.bestTourAt.slice(f * this.n, f * this.n + this.n);
+    if (!slice.some((v) => v >= 0)) {
+      return { i: new Int32Array(0), j: new Int32Array(0), w: new Float32Array(0), count: 0 };
+    }
+    const count = Math.min(this.n, cap);
+    const iOut = new Int32Array(count);
+    const jOut = new Int32Array(count);
+    const wOut = new Float32Array(count).fill(1);
+    for (let k = 0; k < count; k++) {
+      iOut[k] = slice[k];
+      jOut[k] = slice[(k + 1) % this.n];
+    }
+    return { i: iOut, j: jOut, w: wOut, count };
   }
 }
 
+/** Build one playback engine per algorithm from a completed trial + raw Python output. */
+export function buildPlaybackEngines(
+  instanceName: InstanceName,
+  params: BenchmarkParams,
+  completed: CompletedTrial,
+  raw: PythonTrialResult[]
+): PythonPlaybackEngine[] {
+  const instance = INSTANCES[instanceName];
+  const byAlgo = new Map(raw.map((r) => [r.algo, r]));
+  const keyFor: Record<AlgoId, string> = { 0: "standard_aco", 1: "nonadaptive_haco", 2: "adaptive_haco" };
+  return ALGORITHM_IDS.map((algo) => {
+    const series = completed.series.find((s) => s.algo === algo)!;
+    const perAlgo = completed.perAlgo.find((p) => p.algo === algo)!;
+    const rawAlgo = byAlgo.get(keyFor[algo]);
+    return new PythonPlaybackEngine(
+      algo,
+      instance.nodes,
+      { best: series.best, entropy: series.entropy, dominance: series.dominance, triggered: series.triggered },
+      params.tMax,
+      perAlgo.runtimeS,
+      rawAlgo?.tour_improvements,
+      rawAlgo?.best_tour_final
+    );
+  });
+}
+
 /** Convert Python trial results into the CompletedTrial format used by the store. */
-function buildPythonTrial(trialIndex: number, seed: number, results: PythonTrialResult[]): CompletedTrial {
+export function buildPythonTrial(trialIndex: number, seed: number, results: PythonTrialResult[]): CompletedTrial {
   const algoMap: Record<string, AlgoId> = {
     standard_aco: 0,
     nonadaptive_haco: 1,
@@ -193,6 +348,8 @@ export const useRunStore = create<RunState>((set, get) => ({
   edgeCache: emptyEdgeMap(),
   flashCount: { 0: 0, 1: 0, 2: 0 },
   trials: [],
+  pythonRaw: [],
+  pythonRunId: 0,
 
   setInstance: (name) => {
     if (get().status === "running") return;
@@ -220,6 +377,7 @@ export const useRunStore = create<RunState>((set, get) => ({
     const state = get();
     if (state.preparing || state.status === "running") return;
     clearPrepareTimer();
+    const runId = state.pythonRunId + 1;
     set({
       status: "config",
       preparing: true,
@@ -229,45 +387,84 @@ export const useRunStore = create<RunState>((set, get) => ({
       edgeCache: emptyEdgeMap(),
       flashCount: { 0: 0, 1: 0, 2: 0 },
       trials: [],
+      pythonRaw: [],
+      pythonRunId: runId,
     });
 
-    // Python engine: batch all trials via Tauri IPC, then play back with animation
+    // Python engine: fetch trial 0, enter the visual stage immediately,
+    // then stream the remaining trials in the background while trial 0
+    // plays back through the same step()/advance() animation loop.
     if (state.engine === "python" && isTauri()) {
       const { instanceName, params, trialCount } = state;
+      set({ status: "running" });
       (async () => {
         try {
-          const allTrials: CompletedTrial[] = [];
           for (let t = 0; t < trialCount; t++) {
-            const results = await runPythonTrial(instanceName, params.seed + t, params);
-            allTrials.push(buildPythonTrial(t, params.seed + t, results));
-            set({ trials: [...allTrials] });
+            if (get().pythonRunId !== runId) return;
+            const results = await runPythonTrial(instanceName, params.seed + t, params, true);
+            if (get().pythonRunId !== runId) return;
+            const completed = buildPythonTrial(t, params.seed + t, results);
+            const nextRaw = [...get().pythonRaw];
+            nextRaw[t] = results;
+            const nextTrials = [...get().trials, completed];
+            if (t === 0) {
+              set({
+                trials: nextTrials,
+                pythonRaw: nextRaw,
+                engines: buildPlaybackEngines(instanceName, params, completed, results) as unknown as AlgoEngine[],
+                preparing: false,
+                status: "running",
+                currentTrial: 0,
+                frame: 0,
+              });
+            } else {
+              set({ trials: nextTrials, pythonRaw: nextRaw });
+              // If playback finished every trial but was waiting on the
+              // fetch loop, complete the run now.
+              const st = get();
+              const playbackFinished =
+                st.pythonRunId === runId &&
+                st.engine === "python" &&
+                st.status === "paused" &&
+                st.preparing &&
+                st.currentTrial >= trialCount - 1 &&
+                st.engines.every((e) => e.done);
+              if (playbackFinished && nextTrials.length >= trialCount) {
+                set({ status: "completed", preparing: false });
+                return;
+              }
+              // If playback is waiting on the trial that just arrived,
+              // resume it now.
+              if (
+                st.pythonRunId === runId &&
+                st.engine === "python" &&
+                st.status === "paused" &&
+                st.preparing &&
+                st.engines.every((e) => e.done)
+              ) {
+                const awaited = st.currentTrial + 1;
+                const rawAwaited = nextRaw[awaited];
+                const trialAwaited = nextTrials.find((tr) => tr.trial === awaited);
+                if (rawAwaited && trialAwaited) {
+                  set({
+                    engines: buildPlaybackEngines(
+                      st.instanceName,
+                      st.params,
+                      trialAwaited,
+                      rawAwaited
+                    ) as unknown as AlgoEngine[],
+                    frame: 0,
+                    currentTrial: awaited,
+                    status: "running",
+                    preparing: false,
+                  });
+                }
+              }
+            }
             await new Promise((r) => setTimeout(r, 0));
           }
-
-          // Play back the first trial's data through the visualization
-          const firstTrial = allTrials[0];
-          const instance = INSTANCES[instanceName];
-          const virtualEngines = ALGORITHM_IDS.map((algo) => {
-            const series = firstTrial.series.find((s) => s.algo === algo)!;
-            const perAlgo = firstTrial.perAlgo.find((p) => p.algo === algo)!;
-            return new PythonPlaybackEngine(
-              algo,
-              instance.nodes,
-              { best: series.best, entropy: series.entropy, dominance: series.dominance, triggered: series.triggered },
-              params.tMax,
-              perAlgo.activations,
-              perAlgo.runtimeS,
-            );
-          });
-
-          set({
-            status: "running",
-            preparing: false,
-            engines: virtualEngines as unknown as AlgoEngine[],
-            currentTrial: 0,
-            frame: 0,
-          });
         } catch (err) {
+          if (get().pythonRunId !== runId) return;
           console.error("Python engine error:", err);
           set({ status: "config", preparing: false });
         }
@@ -296,7 +493,7 @@ export const useRunStore = create<RunState>((set, get) => ({
 
   stop: () => {
     clearPrepareTimer();
-    set({
+    set((s) => ({
       status: "config",
       preparing: false,
       engines: [],
@@ -305,7 +502,9 @@ export const useRunStore = create<RunState>((set, get) => ({
       edgeCache: emptyEdgeMap(),
       flashCount: { 0: 0, 1: 0, 2: 0 },
       trials: [],
-    });
+      pythonRaw: [],
+      pythonRunId: s.pythonRunId + 1,
+    }));
   },
 
   advance: () => {
@@ -334,7 +533,91 @@ export const useRunStore = create<RunState>((set, get) => ({
       edges[engine.algo] = engine.strongEdges();
     }
 
+    const isPlayback =
+      engines.length > 0 && engines.every((e) => e instanceof PythonPlaybackEngine);
+
     if (engines.every((e) => e.done)) {
+      // Python playback: trials are already stored by the fetch loop, so
+      // never append here. Just switch to the next fetched trial, or wait.
+      // Branch on the actual engine objects (not the selected engine) so a
+      // browser fallback run with TS engines still uses the TS path below.
+      if (isPlayback) {
+        const runId = get().pythonRunId;
+        const nextTrial = currentTrial + 1;
+        if (nextTrial >= get().trialCount) {
+          if (get().trials.length >= get().trialCount) {
+            set({ edgeCache: edges, flashCount: flashes, frame: lastFrame, status: "completed" });
+          } else {
+            set({ edgeCache: edges, flashCount: flashes, frame: lastFrame, status: "paused", preparing: true });
+            clearPrepareTimer();
+            const pollFetchDone = () => {
+              const s = get();
+              if (s.pythonRunId !== runId || s.engine !== "python") return;
+              if (s.trials.length >= s.trialCount) {
+                set({ status: "completed", preparing: false });
+              } else {
+                clearPrepareTimer();
+                prepareTimer = setTimeout(pollFetchDone, 200);
+              }
+            };
+            prepareTimer = setTimeout(pollFetchDone, 200);
+          }
+          return;
+        }
+        const st = get();
+        const rawNext = st.pythonRaw[nextTrial];
+        const trialNext = st.trials.find((tr) => tr.trial === nextTrial);
+        if (rawNext && trialNext) {
+          set({
+            edgeCache: edges,
+            flashCount: flashes,
+            frame: 0,
+            engines: buildPlaybackEngines(
+              st.instanceName,
+              st.params,
+              trialNext,
+              rawNext
+            ) as unknown as AlgoEngine[],
+            currentTrial: nextTrial,
+            status: "running",
+            preparing: false,
+          });
+        } else {
+          set({
+            edgeCache: edges,
+            flashCount: flashes,
+            frame: lastFrame,
+            status: "paused",
+            preparing: true,
+          });
+          clearPrepareTimer();
+          const pollNextTrial = () => {
+            const s = get();
+            if (s.pythonRunId !== runId || s.engine !== "python") return;
+            const raw = s.pythonRaw[nextTrial];
+            const trial = s.trials.find((tr) => tr.trial === nextTrial);
+            if (raw && trial) {
+              set({
+                engines: buildPlaybackEngines(
+                  s.instanceName,
+                  s.params,
+                  trial,
+                  raw
+                ) as unknown as AlgoEngine[],
+                frame: 0,
+                currentTrial: nextTrial,
+                status: "running",
+                preparing: false,
+              });
+            } else {
+              clearPrepareTimer();
+              prepareTimer = setTimeout(pollNextTrial, 200);
+            }
+          };
+          prepareTimer = setTimeout(pollNextTrial, 200);
+        }
+        return;
+      }
       const completed: CompletedTrial = {
         trial: currentTrial,
         seed: state.params.seed + currentTrial,

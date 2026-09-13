@@ -26,15 +26,20 @@ def run_trial(
     rho: float = 0.5,
     Q: float = 1.0,
     greedy_boost: float = 10.0,
+    include_state: bool = True,
 ) -> dict[str, Any]:
     """Run one trial of one algorithm and return results as a dict.
 
     Parameters match what the frontend sends via Tauri IPC. The distance
     matrix is built from coords so the full Python pipeline runs standalone.
+    When include_state is False, tour snapshots are omitted to keep the
+    payload small for background batch trials.
 
     Returns a dict with:
         algo, seed, best_dist, convergence_iter, n_activations,
-        time_s, best_history, entropy_history, entropy_at_trigger, pdr_at_trigger
+        time_s, best_history, entropy_history, pdr_history,
+        triggered_history, best_tour_final, tour_improvements,
+        entropy_at_trigger, pdr_at_trigger
     """
     from pyengine import config as cfg
 
@@ -59,7 +64,8 @@ def run_trial(
     cfg.GREEDY_BOOST = greedy_boost
 
     try:
-        result = _run_trial(algo, d, seed, theta, tau_pdr, entropy_trace=True)
+        result = _run_trial(algo, d, seed, theta, tau_pdr, entropy_trace=True,
+                            include_state=include_state)
     finally:
         # Restore original config
         cfg.T_MAX = original_t_max
@@ -81,6 +87,8 @@ def run_trial(
         "entropy_history": result.entropy_history,
         "pdr_history": result.pdr_history,
         "triggered_history": result.triggered_history,
+        "best_tour_final": result.best_tour_final,
+        "tour_improvements": result.tour_improvements,
         "entropy_at_trigger": result.entropy_at_trigger,
         "pdr_at_trigger": result.pdr_at_trigger,
     }

@@ -24,6 +24,13 @@ pub struct TrialParams {
     pub greedy_boost: f64,
 }
 
+/// One sparse best-tour snapshot: [frame, tour...].
+#[derive(Debug, Serialize)]
+pub struct TourSnapshot {
+    pub frame: i64,
+    pub tour: Vec<i32>,
+}
+
 /// Result returned by the Python engine, matching the TypeScript TrialOutcome.
 #[derive(Debug, Serialize)]
 pub struct PythonTrialResult {
@@ -39,6 +46,8 @@ pub struct PythonTrialResult {
     pub pdr_at_trigger: Vec<f64>,
     pub pdr_history: Vec<f64>,
     pub triggered_history: Vec<bool>,
+    pub best_tour_final: Vec<i32>,
+    pub tour_improvements: Vec<TourSnapshot>,
 }
 
 /// Ensure the Python interpreter and the pyengine module are ready.
@@ -52,7 +61,14 @@ fn ensure_python(pyengine_dir: &std::path::Path) -> PyResult<()> {
         let sys = py.import("sys")?;
         let path = sys.getattr("path")?;
         let dir_str = pyengine_dir.to_string_lossy().into_owned();
-        path.call_method1("insert", (0, dir_str))?;
+        let already: bool = path
+            .call_method1("count", (dir_str.as_str(),))
+            .and_then(|v| v.extract())
+            .unwrap_or(0)
+            > 0;
+        if !already {
+            path.call_method1("insert", (0, dir_str))?;
+        }
         Ok(())
     })
 }
@@ -74,6 +90,7 @@ pub fn run_trial(
     theta: f64,
     tau_pdr: f64,
     params: &TrialParams,
+    include_state: bool,
 ) -> Result<PythonTrialResult, String> {
     ensure_python(pyengine_dir).map_err(|e| format!("python init failed: {e}"))?;
 
@@ -108,6 +125,9 @@ pub fn run_trial(
         kwargs.set_item("Q", params.q).map_err(|e| e.to_string())?;
         kwargs
             .set_item("greedy_boost", params.greedy_boost)
+            .map_err(|e| e.to_string())?;
+        kwargs
+            .set_item("include_state", include_state)
             .map_err(|e| e.to_string())?;
 
         let result = pyengine
@@ -148,6 +168,18 @@ pub fn run_trial(
             .getattr("triggered_history")
             .and_then(|v| v.extract())
             .map_err(|e| format!("extract triggered_history: {e}"))?;
+        let best_tour_final: Vec<i32> = result
+            .getattr("best_tour_final")
+            .and_then(|v| v.extract())
+            .map_err(|e| format!("extract best_tour_final: {e}"))?;
+        let raw_improvements: Vec<(i64, Vec<i32>)> = result
+            .getattr("tour_improvements")
+            .and_then(|v| v.extract())
+            .map_err(|e| format!("extract tour_improvements: {e}"))?;
+        let tour_improvements = raw_improvements
+            .into_iter()
+            .map(|(frame, tour)| TourSnapshot { frame, tour })
+            .collect::<Vec<_>>();
 
         Ok(PythonTrialResult {
             algo: result
@@ -180,6 +212,8 @@ pub fn run_trial(
             pdr_at_trigger,
             pdr_history,
             triggered_history,
+            best_tour_final,
+            tour_improvements,
         })
     })
 }

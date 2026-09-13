@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from pyengine.config import ALPHA, BETA, GREEDY_BOOST, Q, RHO
+from pyengine import config as cfg
 
 
 def initial_tau(n: int, d: np.ndarray, seed: np.ndarray | None = None) -> np.ndarray:
@@ -31,7 +31,7 @@ def initial_tau(n: int, d: np.ndarray, seed: np.ndarray | None = None) -> np.nda
         edges = np.stack([seed[:-1], seed[1:]], axis=1)
         edges = np.concatenate([edges, [[seed[-1], seed[0]]]])
         for i, j in edges:
-            tau[i, j] = tau[j, i] = tau[i, j] * GREEDY_BOOST
+            tau[i, j] = tau[j, i] = tau[i, j] * cfg.GREEDY_BOOST
     return tau
 
 
@@ -39,7 +39,7 @@ def _effective(d: np.ndarray, tau: np.ndarray) -> np.ndarray:
     """tau^alpha * eta^beta, with eta = 1/d on every allowed edge."""
     n = d.shape[0]
     eta = np.divide(1.0, d, out=np.zeros_like(d), where=d > 0)
-    return np.power(tau, ALPHA) * np.power(eta, BETA)
+    return np.power(tau, cfg.ALPHA) * np.power(eta, cfg.BETA)
 
 
 def construct_tours(
@@ -88,7 +88,7 @@ def tour_lengths(d: np.ndarray, tours: np.ndarray) -> np.ndarray:
 def update_pheromones(tau: np.ndarray, d: np.ndarray, tours: np.ndarray) -> np.ndarray:
     """Evaporation + reinforcement:  tau <- (1-rho) tau + sum_k Q/L_k."""
     n = d.shape[0]
-    tau = (1.0 - RHO) * tau
+    tau = (1.0 - cfg.RHO) * tau
     lens = tour_lengths(d, tours)
     deposit = np.zeros((n, n))
     n_ants = tours.shape[0]
@@ -98,7 +98,7 @@ def update_pheromones(tau: np.ndarray, d: np.ndarray, tours: np.ndarray) -> np.n
     close_j = tours[:, 0].ravel()
     reps = np.concatenate([fwd_i, close_i])
     cols = np.concatenate([fwd_j, close_j])
-    vals = np.concatenate([Q / lens.repeat(n - 1), Q / lens])
+    vals = np.concatenate([cfg.Q / lens.repeat(n - 1), cfg.Q / lens])
     np.add.at(deposit, (reps, cols), vals)
     return tau + deposit
 

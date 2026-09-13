@@ -42,6 +42,12 @@ export async function engineInfo(): Promise<unknown | null> {
   }
 }
 
+/** One sparse best-tour snapshot from the Python engine. */
+export interface PythonTourSnapshot {
+  frame: number;
+  tour: number[];
+}
+
 /** Result shape from the Python engine (matches TrialOutcome). */
 export interface PythonTrialResult {
   algo: string;
@@ -56,6 +62,8 @@ export interface PythonTrialResult {
   pdr_at_trigger: number[];
   pdr_history: number[];
   triggered_history: boolean[];
+  best_tour_final: number[];
+  tour_improvements: PythonTourSnapshot[];
 }
 
 interface PythonTrialInput {
@@ -71,11 +79,13 @@ interface PythonTrialInput {
   rho: number;
   q: number;
   greedy_boost: number;
+  include_state: boolean;
 }
 
 /**
  * Run all three algorithms for one trial via the Python engine.
  * Returns results indexed 0 = standard_aco, 1 = nonadaptive_haco, 2 = adaptive_haco.
+ * Pass includeState=false for background batch trials to skip tour snapshots.
  */
 export async function runPythonTrial(
   instanceName: InstanceName,
@@ -88,7 +98,8 @@ export async function runPythonTrial(
     rho: number;
     Q: number;
     greedyBoost: number;
-  }
+  },
+  includeState = true
 ): Promise<PythonTrialResult[]> {
   const instance = INSTANCES[instanceName];
   const coords = instance.coords;
@@ -110,6 +121,7 @@ export async function runPythonTrial(
           rho: params.rho,
           q: params.Q,
           greedy_boost: params.greedyBoost,
+          include_state: includeState,
         } satisfies PythonTrialInput,
       })
     )

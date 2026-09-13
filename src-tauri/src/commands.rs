@@ -30,6 +30,62 @@ pub struct RunPythonTrialInput {
     pub rho: f64,
     pub q: f64,
     pub greedy_boost: f64,
+    #[serde(default = "default_include_state")]
+    pub include_state: bool,
+}
+
+fn default_include_state() -> bool {
+    true
+}
+
+fn validate_trial_input(input: &RunPythonTrialInput) -> Result<(), String> {
+    match input.algo.as_str() {
+        "standard_aco" | "nonadaptive_haco" | "adaptive_haco" => {}
+        other => return Err(format!("unknown algorithm: {other}")),
+    }
+    let n = input.coords.len();
+    if !(4..=500).contains(&n) {
+        return Err(format!("coords must hold 4..=500 cities, got {n}"));
+    }
+    for (i, (x, y)) in input.coords.iter().enumerate() {
+        if !x.is_finite() || !y.is_finite() {
+            return Err(format!("coords[{i}] must be finite numbers"));
+        }
+    }
+    if !(1..=2000).contains(&input.t_max) {
+        return Err(format!("t_max must be 1..=2000, got {}", input.t_max));
+    }
+    if !(5..=100).contains(&input.m) {
+        return Err(format!("m must be 5..=100, got {}", input.m));
+    }
+    if !(0.0..=10.0).contains(&input.alpha) || !input.alpha.is_finite() {
+        return Err(format!("alpha must be 0..=10, got {}", input.alpha));
+    }
+    if !(0.0..=10.0).contains(&input.beta) || !input.beta.is_finite() {
+        return Err(format!("beta must be 0..=10, got {}", input.beta));
+    }
+    if !(0.01..=0.99).contains(&input.rho) || !input.rho.is_finite() {
+        return Err(format!("rho must be 0.01..=0.99, got {}", input.rho));
+    }
+    if !(0.01..=100.0).contains(&input.q) || !input.q.is_finite() {
+        return Err(format!("q must be 0.01..=100, got {}", input.q));
+    }
+    if !(input.greedy_boost > 0.0) || !input.greedy_boost.is_finite() {
+        return Err(format!(
+            "greedy_boost must be positive, got {}",
+            input.greedy_boost
+        ));
+    }
+    if !input.theta.is_finite() || input.theta < 0.0 {
+        return Err(format!("theta must be finite and >= 0, got {}", input.theta));
+    }
+    if !input.tau_pdr.is_finite() || input.tau_pdr < 0.0 {
+        return Err(format!(
+            "tau_pdr must be finite and >= 0, got {}",
+            input.tau_pdr
+        ));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -71,6 +127,7 @@ pub fn export_report(path: String, content: String) -> Result<String, String> {
 /// Run one trial of the Python ACO engine via PyO3.
 #[tauri::command]
 pub async fn run_python_trial(input: RunPythonTrialInput) -> Result<PythonTrialResult, String> {
+    validate_trial_input(&input)?;
     let pyengine_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.join("pyengine")))
@@ -101,6 +158,7 @@ pub async fn run_python_trial(input: RunPythonTrialInput) -> Result<PythonTrialR
             input_clone.theta,
             input_clone.tau_pdr,
             &params,
+            input_clone.include_state,
         )
     })
     .await

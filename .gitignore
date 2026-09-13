@@ -6,3 +6,5 @@ src-tauri/target/
 __pycache__/
 *.pyc
 *.pyo
+.cargo-bin/
+.local/
