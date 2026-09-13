@@ -54,6 +54,8 @@ export interface PythonTrialResult {
   entropy_history: number[];
   entropy_at_trigger: number[];
   pdr_at_trigger: number[];
+  pdr_history: number[];
+  triggered_history: boolean[];
 }
 
 interface PythonTrialInput {

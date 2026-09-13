@@ -37,6 +37,8 @@ pub struct PythonTrialResult {
     pub entropy_history: Vec<f64>,
     pub entropy_at_trigger: Vec<f64>,
     pub pdr_at_trigger: Vec<f64>,
+    pub pdr_history: Vec<f64>,
+    pub triggered_history: Vec<bool>,
 }
 
 /// Ensure the Python interpreter and the pyengine module are ready.
@@ -138,6 +140,14 @@ pub fn run_trial(
             .getattr("pdr_at_trigger")
             .and_then(|v| v.extract())
             .map_err(|e| format!("extract pdr_at_trigger: {e}"))?;
+        let pdr_history: Vec<f64> = result
+            .getattr("pdr_history")
+            .and_then(|v| v.extract())
+            .map_err(|e| format!("extract pdr_history: {e}"))?;
+        let triggered_history: Vec<bool> = result
+            .getattr("triggered_history")
+            .and_then(|v| v.extract())
+            .map_err(|e| format!("extract triggered_history: {e}"))?;
 
         Ok(PythonTrialResult {
             algo: result
@@ -168,6 +178,8 @@ pub fn run_trial(
             entropy_history,
             entropy_at_trigger,
             pdr_at_trigger,
+            pdr_history,
+            triggered_history,
         })
     })
 }

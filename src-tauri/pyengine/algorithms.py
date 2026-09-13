@@ -42,6 +42,8 @@ class TrialResult:
     pdr_at_trigger: list[float] = field(default_factory=list)
     best_history: list[float] = field(default_factory=list)
     entropy_history: list[float] = field(default_factory=list)
+    pdr_history: list[float] = field(default_factory=list)
+    triggered_history: list[bool] = field(default_factory=list)
 
 
 def _convergence_iter(best_history: np.ndarray) -> int:
@@ -65,6 +67,8 @@ def run_standard_aco(d: np.ndarray, seed: int, entropy_trace: bool = True,
     best_len = float("inf")
     hist = np.empty(T_MAX)
     enth = np.empty(T_MAX)
+    pdr_hist = np.empty(T_MAX)
+    trig_hist = np.zeros(T_MAX, dtype=bool)
     for t in range(T_MAX):
         tours = construct_tours(d, tau, M, rng)
         lens = tour_lengths(d, tours)
@@ -74,6 +78,7 @@ def run_standard_aco(d: np.ndarray, seed: int, entropy_trace: bool = True,
             best_tour = tours[k].copy()
         tau = update_pheromones(tau, d, tours)
         hist[t] = best_len
+        pdr_hist[t] = pdr(tau)
         if entropy_trace:
             enth[t] = shannon_entropy(tours, n)
     elapsed = time.perf_counter() - t0
@@ -82,6 +87,8 @@ def run_standard_aco(d: np.ndarray, seed: int, entropy_trace: bool = True,
         best_dist=best_len, convergence_iter=_convergence_iter(hist),
         best_history=hist.tolist(),
         entropy_history=enth.tolist() if entropy_trace else [],
+        pdr_history=pdr_hist.tolist(),
+        triggered_history=trig_hist.tolist(),
     )
 
 
@@ -94,6 +101,8 @@ def _run_nonadaptive(d: np.ndarray, seed: int, entropy_trace: bool = True) -> Tr
     best_len = float("inf")
     hist = np.empty(T_MAX)
     enth = np.empty(T_MAX)
+    pdr_hist = np.empty(T_MAX)
+    trig_hist = np.ones(T_MAX, dtype=bool)
     for t in range(T_MAX):
         tours = construct_tours(d, tau, M, rng)
         lens = tour_lengths(d, tours)
@@ -105,6 +114,7 @@ def _run_nonadaptive(d: np.ndarray, seed: int, entropy_trace: bool = True) -> Tr
         best_tour = two_opt(best_tour, d)
         best_len = tour_dist(d, best_tour)
         hist[t] = best_len
+        pdr_hist[t] = pdr(tau)
         if entropy_trace:
             enth[t] = shannon_entropy(tours, n)
     elapsed = time.perf_counter() - t0
@@ -113,6 +123,8 @@ def _run_nonadaptive(d: np.ndarray, seed: int, entropy_trace: bool = True) -> Tr
         best_dist=best_len, convergence_iter=_convergence_iter(hist),
         best_history=hist.tolist(),
         entropy_history=enth.tolist() if entropy_trace else [],
+        pdr_history=pdr_hist.tolist(),
+        triggered_history=trig_hist.tolist(),
     )
 
 
@@ -125,6 +137,8 @@ def _run_adaptive(d: np.ndarray, seed: int, theta: float, tau_pdr: float,
     best_tour, best_len = nearest_neighbor_tour(d, rng)
     hist = np.empty(T_MAX)
     enth = np.empty(T_MAX)
+    pdr_hist = np.empty(T_MAX)
+    trig_hist = np.zeros(T_MAX, dtype=bool)
     n_act = 0
     triggers_e = []
     triggers_p = []
@@ -139,12 +153,14 @@ def _run_adaptive(d: np.ndarray, seed: int, theta: float, tau_pdr: float,
         hist[t] = best_len
         H = shannon_entropy(tours, n)
         P = pdr(tau)
+        pdr_hist[t] = P
         if entropy_trace:
             enth[t] = H
         if H < theta and P > tau_pdr:
             best_tour = two_opt(best_tour, d)
             best_len = tour_dist(d, best_tour)
             hist[t] = best_len
+            trig_hist[t] = True
             n_act += 1
             triggers_e.append(H)
             triggers_p.append(P)
@@ -155,6 +171,8 @@ def _run_adaptive(d: np.ndarray, seed: int, theta: float, tau_pdr: float,
         n_activations=n_act, entropy_at_trigger=triggers_e,
         pdr_at_trigger=triggers_p, best_history=hist.tolist(),
         entropy_history=enth.tolist() if entropy_trace else [],
+        pdr_history=pdr_hist.tolist(),
+        triggered_history=trig_hist.tolist(),
     )
 
 

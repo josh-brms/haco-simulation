@@ -87,6 +87,69 @@ function makeEngines(instanceName: InstanceName, params: BenchmarkParams, trial:
   return ALGORITHM_IDS.map((algo) => new AlgoEngine(algo, instance, params, params.seed + trial));
 }
 
+/**
+ * Virtual engine that replays pre-computed Python results through the
+ * same step()/advance() interface the TypeScript engine uses.
+ */
+class PythonPlaybackEngine {
+  readonly algo: AlgoId;
+  readonly n: number;
+  readonly best: number[];
+  readonly entropy: number[];
+  readonly dominance: number[];
+  readonly triggered: boolean[];
+  readonly bestTourAt: Int32Array;
+  activations = 0;
+  runtimeS = 0;
+
+  private frame = 0;
+  private tMax: number;
+
+  constructor(algo: AlgoId, n: number, series: { best: number[]; entropy: number[]; dominance: number[]; triggered: boolean[] }, tMax: number, activations: number, runtimeS: number) {
+    this.algo = algo;
+    this.n = n;
+    this.best = series.best;
+    this.entropy = series.entropy;
+    this.dominance = series.dominance;
+    this.triggered = series.triggered;
+    this.tMax = tMax;
+    this.activations = activations;
+    this.runtimeS = runtimeS;
+    this.bestTourAt = new Int32Array(tMax * n).fill(-1);
+  }
+
+  get done(): boolean {
+    return this.frame >= this.tMax;
+  }
+
+  step(): { frame: number; bestLen: number; entropy: number; pdr: number; triggerFired: boolean; bestTour: Int32Array; tau: Float64Array } | null {
+    if (this.done) return null;
+    const f = this.frame;
+    this.frame++;
+    return {
+      frame: f,
+      bestLen: this.best[f] ?? Infinity,
+      entropy: this.entropy[f] ?? 0,
+      pdr: this.dominance[f] ?? 1,
+      triggerFired: this.triggered[f] ?? false,
+      bestTour: new Int32Array(this.n),
+      tau: new Float64Array(this.n * this.n),
+    };
+  }
+
+  convergenceIteration(): number {
+    for (let t = 20; t < this.best.length; t++) {
+      const prev = this.best[t - 20];
+      if (prev > 0 && (prev - this.best[t]) / prev <= 0.001) return t;
+    }
+    return this.best.length;
+  }
+
+  strongEdges(): EdgeWeights {
+    return { i: new Int32Array(0), j: new Int32Array(0), w: new Float32Array(0), count: 0 };
+  }
+}
+
 /** Convert Python trial results into the CompletedTrial format used by the store. */
 function buildPythonTrial(trialIndex: number, seed: number, results: PythonTrialResult[]): CompletedTrial {
   const algoMap: Record<string, AlgoId> = {
@@ -109,8 +172,8 @@ function buildPythonTrial(trialIndex: number, seed: number, results: PythonTrial
       algo: algoMap[r.algo],
       best: r.best_history,
       entropy: r.entropy_history,
-      dominance: r.pdr_at_trigger,
-      triggered: r.entropy_at_trigger.map(() => false),
+      dominance: r.pdr_history,
+      triggered: r.triggered_history,
     })),
   };
 }
@@ -168,7 +231,7 @@ export const useRunStore = create<RunState>((set, get) => ({
       trials: [],
     });
 
-    // Python engine: batch all trials via Tauri IPC (safety: fall back to TS if not in Tauri)
+    // Python engine: batch all trials via Tauri IPC, then play back with animation
     if (state.engine === "python" && isTauri()) {
       const { instanceName, params, trialCount } = state;
       (async () => {
@@ -177,16 +240,32 @@ export const useRunStore = create<RunState>((set, get) => ({
           for (let t = 0; t < trialCount; t++) {
             const results = await runPythonTrial(instanceName, params.seed + t, params);
             allTrials.push(buildPythonTrial(t, params.seed + t, results));
-            // yield between trials so the UI stays responsive
+            set({ trials: [...allTrials] });
             await new Promise((r) => setTimeout(r, 0));
           }
+
+          // Play back the first trial's data through the visualization
+          const firstTrial = allTrials[0];
+          const instance = INSTANCES[instanceName];
+          const virtualEngines = ALGORITHM_IDS.map((algo) => {
+            const series = firstTrial.series.find((s) => s.algo === algo)!;
+            const perAlgo = firstTrial.perAlgo.find((p) => p.algo === algo)!;
+            return new PythonPlaybackEngine(
+              algo,
+              instance.nodes,
+              { best: series.best, entropy: series.entropy, dominance: series.dominance, triggered: series.triggered },
+              params.tMax,
+              perAlgo.activations,
+              perAlgo.runtimeS,
+            );
+          });
+
           set({
-            status: "completed",
+            status: "running",
             preparing: false,
-            trials: allTrials,
-            engines: [],
-            currentTrial: trialCount,
-            frame: params.tMax,
+            engines: virtualEngines as unknown as AlgoEngine[],
+            currentTrial: 0,
+            frame: 0,
           });
         } catch (err) {
           console.error("Python engine error:", err);

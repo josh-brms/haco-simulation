@@ -79,6 +79,8 @@ def run_trial(
         "time_s": result.time_s,
         "best_history": result.best_history,
         "entropy_history": result.entropy_history,
+        "pdr_history": result.pdr_history,
+        "triggered_history": result.triggered_history,
         "entropy_at_trigger": result.entropy_at_trigger,
         "pdr_at_trigger": result.pdr_at_trigger,
     }
