@@ -63,7 +63,8 @@ export interface PythonTrialResult {
   pdr_history: number[];
   triggered_history: boolean[];
   best_tour_final: number[];
-  tour_improvements: PythonTourSnapshot[];
+  tour_frames: number[];
+  tour_snapshots: number[][];
 }
 
 interface PythonTrialInput {

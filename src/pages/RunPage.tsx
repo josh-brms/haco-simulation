@@ -55,6 +55,7 @@ function VisualStage() {
   const flashCount = useRunStore((s) => s.flashCount);
   const trials = useRunStore((s) => s.trials);
   const preparing = useRunStore((s) => s.preparing);
+  const runError = useRunStore((s) => s.runError);
   const setPlaybackSpeed = useRunStore((s) => s.setPlaybackSpeed);
   const pause = useRunStore((s) => s.pause);
   const resume = useRunStore((s) => s.resume);
@@ -194,6 +195,15 @@ function VisualStage() {
         </div>
       </header>
 
+      {runError && (
+        <div className="border-b border-red-900/60 bg-red-950/60 px-5 py-2.5 flex items-center justify-between gap-3" data-testid="run-error">
+          <p className="text-xs text-red-200 break-words">{runError}</p>
+          <Button size="sm" variant="secondary" onClick={stop} data-testid="error-back-btn">
+            Back to config
+          </Button>
+        </div>
+      )}
+
       <div className="flex-1 flex min-h-0">
         {/* LEFT: progress + parameters in effect */}
         <aside className="w-72 border-r border-zinc-800 bg-zinc-900/40 p-4 space-y-4 overflow-y-auto">
@@ -212,6 +222,11 @@ function VisualStage() {
                   {frame}/{params.tMax}
                 </span>
               </div>
+              {engineType === "python" && engines.length === 0 && !runError && (
+                <p className="text-[11px] text-blue-400/80" data-testid="python-fetch-progress">
+                  Fetching Python trial {Math.min(trials.length + 1, trialCount)}/{trialCount} — the 3D map and charts start with trial 1.
+                </p>
+              )}
               {engine && (
                 <div className="text-xs text-zinc-500 space-y-1 pt-1">
                   <div className="flex justify-between">

@@ -172,12 +172,24 @@ pub fn run_trial(
             .getattr("best_tour_final")
             .and_then(|v| v.extract())
             .map_err(|e| format!("extract best_tour_final: {e}"))?;
-        let raw_improvements: Vec<(i64, Vec<i32>)> = result
-            .getattr("tour_improvements")
+        let tour_frames: Vec<i64> = result
+            .getattr("tour_frames")
             .and_then(|v| v.extract())
-            .map_err(|e| format!("extract tour_improvements: {e}"))?;
-        let tour_improvements = raw_improvements
+            .map_err(|e| format!("extract tour_frames: {e}"))?;
+        let tour_snapshots: Vec<Vec<i32>> = result
+            .getattr("tour_snapshots")
+            .and_then(|v| v.extract())
+            .map_err(|e| format!("extract tour_snapshots: {e}"))?;
+        if tour_frames.len() != tour_snapshots.len() {
+            return Err(format!(
+                "tour_frames/tour_snapshots length mismatch: {} vs {}",
+                tour_frames.len(),
+                tour_snapshots.len()
+            ));
+        }
+        let tour_improvements = tour_frames
             .into_iter()
+            .zip(tour_snapshots)
             .map(|(frame, tour)| TourSnapshot { frame, tour })
             .collect::<Vec<_>>();
 

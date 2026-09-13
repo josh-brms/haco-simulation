@@ -46,7 +46,8 @@ class TrialResult:
     pdr_history: list[float] = field(default_factory=list)
     triggered_history: list[bool] = field(default_factory=list)
     best_tour_final: list[int] = field(default_factory=list)
-    tour_improvements: list[list] = field(default_factory=list)
+    tour_frames: list[int] = field(default_factory=list)
+    tour_snapshots: list[list[int]] = field(default_factory=list)
 
 
 def _convergence_iter(best_history: np.ndarray) -> int:
@@ -99,7 +100,8 @@ def run_standard_aco(d: np.ndarray, seed: int, entropy_trace: bool = True,
         pdr_history=pdr_hist.tolist(),
         triggered_history=trig_hist.tolist(),
         best_tour_final=best_tour.tolist() if include_state and best_tour is not None else [],
-        tour_improvements=improvements if include_state else [],
+        tour_frames=[f for f, _ in improvements] if include_state else [],
+        tour_snapshots=[t for _, t in improvements] if include_state else [],
     )
 
 
@@ -141,7 +143,8 @@ def _run_nonadaptive(d: np.ndarray, seed: int, entropy_trace: bool = True,
         pdr_history=pdr_hist.tolist(),
         triggered_history=trig_hist.tolist(),
         best_tour_final=best_tour.tolist() if include_state and best_tour is not None else [],
-        tour_improvements=improvements if include_state else [],
+        tour_frames=[f for f, _ in improvements] if include_state else [],
+        tour_snapshots=[t for _, t in improvements] if include_state else [],
     )
 
 
@@ -201,7 +204,8 @@ def _run_adaptive(d: np.ndarray, seed: int, theta: float, tau_pdr: float,
         pdr_history=pdr_hist.tolist(),
         triggered_history=trig_hist.tolist(),
         best_tour_final=np.asarray(best_tour).tolist() if include_state else [],
-        tour_improvements=improvements if include_state else [],
+        tour_frames=[f for f, _ in improvements] if include_state else [],
+        tour_snapshots=[t for _, t in improvements] if include_state else [],
     )
 
 

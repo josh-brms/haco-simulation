@@ -28,6 +28,7 @@ function syntheticRaw(seed: number, tMax: number, n: number): PythonTrialResult[
     const pdr_history = Array.from({ length: tMax }, (_, t) => 1 + t * 0.05);
     const triggered_history = Array.from({ length: tMax }, (_, t) => algo === "adaptive_haco" && t % 10 === 0);
     const tour = Array.from({ length: n }, (_, i) => (i + seed) % n);
+    const rev = [...tour].reverse();
     return {
       algo,
       seed,
@@ -42,10 +43,8 @@ function syntheticRaw(seed: number, tMax: number, n: number): PythonTrialResult[
       pdr_history,
       triggered_history,
       best_tour_final: tour,
-      tour_improvements: [
-        { frame: 0, tour },
-        { frame: Math.floor(tMax / 2), tour: [...tour].reverse() },
-      ],
+      tour_frames: [0, Math.floor(tMax / 2)],
+      tour_snapshots: [tour, rev],
     };
   });
 }
@@ -79,13 +78,16 @@ describe("PythonPlaybackEngine", () => {
     const tMax = 10;
     const n = 4;
     const raw = syntheticRaw(0, tMax, n)[2];
+    const tourSnapshots: Array<{ frame: number; tour: number[] }> = raw.tour_frames.map(
+      (frame, i) => ({ frame, tour: raw.tour_snapshots[i] ?? [] })
+    );
     const engine = new PythonPlaybackEngine(
       2,
       n,
       { best: raw.best_history, entropy: raw.entropy_history, dominance: raw.pdr_history, triggered: raw.triggered_history },
       tMax,
       raw.time_s,
-      raw.tour_improvements,
+      tourSnapshots,
       raw.best_tour_final
     );
     expect(engine.done).toBe(false);
@@ -105,14 +107,14 @@ describe("PythonPlaybackEngine", () => {
     expect(engine.step()).toBeNull();
 
     // Tour buffer shows the first snapshot at frame 0 and switches midway.
-    expect(Array.from(engine.bestTourAt.slice(0, n))).toEqual(raw.tour_improvements[0].tour);
-    expect(Array.from(engine.bestTourAt.slice(5 * n, 6 * n))).toEqual(raw.tour_improvements[1].tour);
+    expect(Array.from(engine.bestTourAt.slice(0, n))).toEqual(raw.tour_snapshots[0]);
+    expect(Array.from(engine.bestTourAt.slice(5 * n, 6 * n))).toEqual(raw.tour_snapshots[1]);
 
     // Trails follow the revealed tour (known from frame 0 here).
     const engine2 = new PythonPlaybackEngine(
       0, n,
       { best: raw.best_history, entropy: raw.entropy_history, dominance: raw.pdr_history, triggered: raw.triggered_history },
-      tMax, raw.time_s, raw.tour_improvements, raw.best_tour_final
+      tMax, raw.time_s, tourSnapshots, raw.best_tour_final
     );
     expect(engine2.strongEdges().count).toBe(n);
     engine2.step();

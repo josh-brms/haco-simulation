@@ -38,7 +38,7 @@ def run_trial(
     Returns a dict with:
         algo, seed, best_dist, convergence_iter, n_activations,
         time_s, best_history, entropy_history, pdr_history,
-        triggered_history, best_tour_final, tour_improvements,
+        triggered_history, best_tour_final, tour_frames, tour_snapshots,
         entropy_at_trigger, pdr_at_trigger
     """
     from pyengine import config as cfg
@@ -88,7 +88,8 @@ def run_trial(
         "pdr_history": result.pdr_history,
         "triggered_history": result.triggered_history,
         "best_tour_final": result.best_tour_final,
-        "tour_improvements": result.tour_improvements,
+        "tour_frames": result.tour_frames,
+        "tour_snapshots": result.tour_snapshots,
         "entropy_at_trigger": result.entropy_at_trigger,
         "pdr_at_trigger": result.pdr_at_trigger,
     }
