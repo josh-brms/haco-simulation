@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Cargo wrapper: sets LD_LIBRARY_PATH only for cargo, not for npm/node.
+export LD_LIBRARY_PATH="${HOME}/anaconda3/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "${HOME}/.cargo/bin/cargo" "$@"
