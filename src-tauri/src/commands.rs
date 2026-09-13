@@ -128,13 +128,13 @@ pub fn export_report(path: String, content: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn run_python_trial(input: RunPythonTrialInput) -> Result<PythonTrialResult, String> {
     validate_trial_input(&input)?;
-    let pyengine_dir = std::env::current_exe()
+    let pyengine_parent = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|p| p.join("pyengine")))
-        .filter(|p| p.exists())
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .filter(|p| p.join("pyengine").exists())
         .unwrap_or_else(|| {
-            // Fallback for development: resolve relative to Cargo.toml
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("pyengine")
+            // Fallback for development: resolve to Cargo.toml directory (src-tauri)
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         });
 
     let params = TrialParams {
@@ -148,7 +148,7 @@ pub async fn run_python_trial(input: RunPythonTrialInput) -> Result<PythonTrialR
     };
 
     let input_clone = input;
-    let pydir = pyengine_dir;
+    let pydir = pyengine_parent;
 
     tauri::async_runtime::spawn_blocking(move || {
         pybridge::run_trial(
