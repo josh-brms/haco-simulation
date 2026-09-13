@@ -145,39 +145,39 @@ pub fn run_trial(
             })?;
 
         let best_history: Vec<f64> = result
-            .getattr("best_history")
+            .get_item("best_history")
             .and_then(|v| v.extract())
             .map_err(|e| format!("extract best_history: {e}"))?;
         let entropy_history: Vec<f64> = result
-            .getattr("entropy_history")
+            .get_item("entropy_history")
             .and_then(|v| v.extract())
             .map_err(|e| format!("extract entropy_history: {e}"))?;
         let entropy_at_trigger: Vec<f64> = result
-            .getattr("entropy_at_trigger")
+            .get_item("entropy_at_trigger")
             .and_then(|v| v.extract())
             .map_err(|e| format!("extract entropy_at_trigger: {e}"))?;
         let pdr_at_trigger: Vec<f64> = result
-            .getattr("pdr_at_trigger")
+            .get_item("pdr_at_trigger")
             .and_then(|v| v.extract())
             .map_err(|e| format!("extract pdr_at_trigger: {e}"))?;
         let pdr_history: Vec<f64> = result
-            .getattr("pdr_history")
+            .get_item("pdr_history")
             .and_then(|v| v.extract())
             .map_err(|e| format!("extract pdr_history: {e}"))?;
         let triggered_history: Vec<bool> = result
-            .getattr("triggered_history")
+            .get_item("triggered_history")
             .and_then(|v| v.extract())
             .map_err(|e| format!("extract triggered_history: {e}"))?;
         let best_tour_final: Vec<i32> = result
-            .getattr("best_tour_final")
+            .get_item("best_tour_final")
             .and_then(|v| v.extract())
             .map_err(|e| format!("extract best_tour_final: {e}"))?;
         let tour_frames: Vec<i64> = result
-            .getattr("tour_frames")
+            .get_item("tour_frames")
             .and_then(|v| v.extract())
             .map_err(|e| format!("extract tour_frames: {e}"))?;
         let tour_snapshots: Vec<Vec<i32>> = result
-            .getattr("tour_snapshots")
+            .get_item("tour_snapshots")
             .and_then(|v| v.extract())
             .map_err(|e| format!("extract tour_snapshots: {e}"))?;
         if tour_frames.len() != tour_snapshots.len() {
@@ -195,27 +195,27 @@ pub fn run_trial(
 
         Ok(PythonTrialResult {
             algo: result
-                .getattr("algo")
+                .get_item("algo")
                 .and_then(|v| v.extract())
                 .map_err(|e| format!("extract algo: {e}"))?,
             seed: result
-                .getattr("seed")
+                .get_item("seed")
                 .and_then(|v| v.extract())
                 .map_err(|e| format!("extract seed: {e}"))?,
             best_dist: result
-                .getattr("best_dist")
+                .get_item("best_dist")
                 .and_then(|v| v.extract())
                 .map_err(|e| format!("extract best_dist: {e}"))?,
             convergence_iter: result
-                .getattr("convergence_iter")
+                .get_item("convergence_iter")
                 .and_then(|v| v.extract())
                 .map_err(|e| format!("extract convergence_iter: {e}"))?,
             n_activations: result
-                .getattr("n_activations")
+                .get_item("n_activations")
                 .and_then(|v| v.extract())
                 .map_err(|e| format!("extract n_activations: {e}"))?,
             time_s: result
-                .getattr("time_s")
+                .get_item("time_s")
                 .and_then(|v| v.extract())
                 .map_err(|e| format!("extract time_s: {e}"))?,
             best_history,
