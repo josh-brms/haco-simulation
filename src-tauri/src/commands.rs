@@ -131,6 +131,7 @@ pub async fn run_python_trial(input: RunPythonTrialInput) -> Result<PythonTrialR
     let pyengine_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.join("pyengine")))
+        .filter(|p| p.exists())
         .unwrap_or_else(|| {
             // Fallback for development: resolve relative to Cargo.toml
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("pyengine")
