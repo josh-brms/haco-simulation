@@ -104,9 +104,12 @@ export default function RunDetail({ run, onBack }: { run: StoredRun; onBack: () 
                 </CardTitle>
               </CardHeader>
               <CardContent className="text-sm space-y-0.5">
-                <div className="text-xl font-semibold text-zinc-100">{fmt(a.meanBest)}</div>
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wide">Mean of {p.trials} trials</div>
+                <div className="text-xl font-semibold text-zinc-100">
+                  {fmt(a.meanBest)} <span className="text-sm font-normal text-zinc-500">± {a.sdBest.toFixed(2)}</span>
+                </div>
                 <p className="text-xs text-zinc-500">
-                  mean L* &middot; {a.gapPct.toFixed(2)}% gap
+                  L* &middot; {a.gapPct.toFixed(2)}% gap
                 </p>
                 <p className="text-xs text-zinc-500">
                   conv iter {a.meanConvergence.toFixed(0)} &middot; {a.meanRuntimeS.toFixed(3)} s
@@ -152,6 +155,51 @@ export default function RunDetail({ run, onBack }: { run: StoredRun; onBack: () 
             </CardContent>
           </Card>
         </div>
+
+        {/* per-trial breakdown — lets the user inspect every trial, not just the mean */}
+        <Card>
+          <CardHeader className="pb-2 flex flex-row items-center justify-between">
+            <CardTitle className="text-sm">All trials ({run.trialsData.length})</CardTitle>
+            <span className="text-[11px] text-zinc-500">click seed to view raw series</span>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="max-h-64 overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-zinc-950 text-zinc-500 border-b border-zinc-800">
+                  <tr className="text-left">
+                    <th className="py-1.5 px-3 font-medium">Trial</th>
+                    <th className="py-1.5 px-3 font-medium">Seed</th>
+                    {ALGORITHM_IDS.map((a) => (
+                      <th key={a} className="py-1.5 px-3 font-medium" style={{ color: ALGO_COLORS[a] }}>{ALGORITHM_IDS.length > 1 ? `${a}:` : ""} L*</th>
+                    ))}
+                    {ALGORITHM_IDS.map((a) => (
+                      <th key={`c-${a}`} className="py-1.5 px-3 font-medium text-zinc-500">conv {a}</th>
+                    ))}
+                    <th className="py-1.5 px-3 font-medium">∑ 2-opt</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {run.trialsData.map((t) => (
+                    <tr key={t.trial} className="border-b border-zinc-900 hover:bg-zinc-900/40">
+                      <td className="py-1 px-3 text-zinc-300">#{t.trial + 1}</td>
+                      <td className="py-1 px-3 text-zinc-500 font-mono">{t.seed}</td>
+                      {ALGORITHM_IDS.map((a) => {
+                        const r = t.perAlgo.find((x) => x.algo === a);
+                        const gap = r ? ((r.bestDist - instance.optimum) / instance.optimum) * 100 : NaN;
+                        return <td key={a} className="py-1 px-3 font-mono" style={{ color: ALGO_COLORS[a] }}>{r ? `${fmt(r.bestDist)}` : "--"}<span className="text-zinc-600 ml-1">({Number.isFinite(gap) ? gap.toFixed(1) : "--"}%)</span></td>;
+                      })}
+                      {ALGORITHM_IDS.map((a) => {
+                        const r = t.perAlgo.find((x) => x.algo === a);
+                        return <td key={`c-${a}`} className="py-1 px-3 text-zinc-400 font-mono">{r ? r.convergenceIter : "--"}</td>;
+                      })}
+                      <td className="py-1 px-3 text-red-400 font-mono">{t.perAlgo.find((x) => x.algo === 2)?.activations ?? "--"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* plain-language explanation */}
         <Card>

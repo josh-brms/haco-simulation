@@ -24,13 +24,6 @@ pub struct TrialParams {
     pub greedy_boost: f64,
 }
 
-/// One sparse best-tour snapshot: [frame, tour...].
-#[derive(Debug, Serialize)]
-pub struct TourSnapshot {
-    pub frame: i64,
-    pub tour: Vec<i32>,
-}
-
 /// Result returned by the Python engine, matching the TypeScript TrialOutcome.
 #[derive(Debug, Serialize)]
 pub struct PythonTrialResult {
@@ -47,7 +40,8 @@ pub struct PythonTrialResult {
     pub pdr_history: Vec<f64>,
     pub triggered_history: Vec<bool>,
     pub best_tour_final: Vec<i32>,
-    pub tour_improvements: Vec<TourSnapshot>,
+    pub tour_frames: Vec<i64>,
+    pub tour_snapshots: Vec<Vec<i32>>,
 }
 
 /// Ensure the Python interpreter and the pyengine module are ready.
@@ -187,11 +181,6 @@ pub fn run_trial(
                 tour_snapshots.len()
             ));
         }
-        let tour_improvements = tour_frames
-            .into_iter()
-            .zip(tour_snapshots)
-            .map(|(frame, tour)| TourSnapshot { frame, tour })
-            .collect::<Vec<_>>();
 
         Ok(PythonTrialResult {
             algo: result
@@ -225,7 +214,8 @@ pub fn run_trial(
             pdr_history,
             triggered_history,
             best_tour_final,
-            tour_improvements,
+            tour_frames,
+            tour_snapshots,
         })
     })
 }

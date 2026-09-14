@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Play, Pause, RotateCcw, SlidersHorizontal, Zap } from "lucide-react";
-import { useRunStore, aggregateTrials } from "@/stores/runStore";
+import { useRunStore, aggregateTrials, buildPlaybackEngines } from "@/stores/runStore";
 import RunConfig from "@/pages/RunConfig";
 import { useResultsStore } from "@/stores/resultsStore";
 import type { StoredRun } from "@/stores/resultsStore";
@@ -56,6 +56,7 @@ function VisualStage() {
   const trials = useRunStore((s) => s.trials);
   const preparing = useRunStore((s) => s.preparing);
   const runError = useRunStore((s) => s.runError);
+  const pythonFetchProgress = useRunStore((s) => s.pythonFetchProgress);
   const setPlaybackSpeed = useRunStore((s) => s.setPlaybackSpeed);
   const pause = useRunStore((s) => s.pause);
   const resume = useRunStore((s) => s.resume);
@@ -76,7 +77,14 @@ function VisualStage() {
     if (status !== "running") return;
     const loop = (ts: number) => {
       if (ts - lastTickRef.current > 33) {
-        advance();
+        try {
+          advance();
+        } catch (err) {
+          console.error("benchmark advance failed:", err);
+          // Fall through to stop rather than spin forever on a broken engine.
+          useRunStore.getState().stop();
+          return;
+        }
         lastTickRef.current = ts;
       }
       rafRef.current = requestAnimationFrame(loop);
@@ -142,7 +150,15 @@ function VisualStage() {
     }));
   }, [trials, instanceName]);
 
-  const progress = params.tMax > 0 ? Math.min(100, (frame / params.tMax) * 100) : 0;
+  const pythonRaw = useRunStore((s) => s.pythonRaw);
+  // overall progress across all trials when Python sequentially replays
+  const progress = (() => {
+    if (engineType === "python" && trialCount > 0 && params.tMax > 0) {
+      const overall = (currentTrial * params.tMax + frame) / (trialCount * params.tMax);
+      return Math.min(100, overall * 100);
+    }
+    return params.tMax > 0 ? Math.min(100, (frame / params.tMax) * 100) : 0;
+  })();
   const currentBest = engine ? engine.currentBest : Infinity;
 
   // flash the best-L* value whenever the tour improves
@@ -155,9 +171,13 @@ function VisualStage() {
     if (currentBest < prevBestRef.current) prevBestRef.current = currentBest;
   }, [currentBest]);
 
+  // Full-screen loader only for TypeScript engine (Python keeps the
+  // 3D scene live while background trials fetch).
+  const showLoader = preparing && engineType !== "python";
+
   return (
     <div className="h-screen flex flex-col relative">
-      {preparing && <Loader label={currentTrial === 0 ? "Preparing benchmark engines" : `Preparing trial ${currentTrial + 1}`} />}
+      {showLoader && <Loader label={currentTrial === 0 ? "Preparing benchmark engines" : `Preparing trial ${currentTrial + 1}`} />}
       <header className="border-b border-zinc-800 bg-zinc-900/60 px-5 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold text-zinc-100">Benchmark Run</h1>
@@ -222,11 +242,24 @@ function VisualStage() {
                   {frame}/{params.tMax}
                 </span>
               </div>
-              {engineType === "python" && engines.length === 0 && !runError && (
-                <p className="text-[11px] text-blue-400/80" data-testid="python-fetch-progress">
-                  Fetching Python trial {Math.min(trials.length + 1, trialCount)}/{trialCount} — the 3D map and charts start with trial 1.
-                </p>
-              )}
+              {engineType === "python" &&
+                pythonFetchProgress !== null &&
+                pythonFetchProgress.done < pythonFetchProgress.total &&
+                !runError && (
+                  <div className="space-y-1.5" data-testid="python-fetch-progress">
+                    <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                      <div
+                        className="h-full bg-blue-500 transition-all duration-300"
+                        style={{ width: `${(pythonFetchProgress.done / pythonFetchProgress.total) * 100}%` }}
+                      />
+                    </div>
+                    <p className="text-[11px] text-blue-400/80">
+                      {engines.length === 0
+                        ? `Fetching Python trial ${pythonFetchProgress.done + 1}/${pythonFetchProgress.total} — the 3D map and charts start with trial 1.`
+                        : `Fetching trial ${pythonFetchProgress.done + 1}/${pythonFetchProgress.total} in background — 3D scene stays interactive.`}
+                    </p>
+                  </div>
+                )}
               {engine && (
                 <div className="text-xs text-zinc-500 space-y-1 pt-1">
                   <div className="flex justify-between">
@@ -255,6 +288,69 @@ function VisualStage() {
               )}
             </CardContent>
           </Card>
+
+          {trials.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2 flex flex-row items-center justify-between">
+                <CardTitle className="text-sm">Trials ({trials.length}/{trialCount})</CardTitle>
+                {trials.length < trialCount && engineType === "python" && status === "running" && (
+                  <span className="text-[10px] text-blue-400">live</span>
+                )}
+              </CardHeader>
+              <CardContent className="space-y-1 max-h-52 overflow-y-auto pr-1">
+                {trials.map((t) => {
+                  const isActive = t.trial === currentTrial && status !== "completed";
+                  const bestPerAlgo = ALGORITHM_IDS.map((a) => {
+                    const r = t.perAlgo.find((x) => x.algo === a);
+                    return r ? fmt(r.bestDist) : "--";
+                  });
+                  return (
+                    <button
+                      key={t.trial}
+                      onClick={() => {
+                        const raw = pythonRaw[t.trial];
+                        if (!raw) return;
+                        const s = useRunStore.getState();
+                        if (s.status !== "running" && s.status !== "completed") return;
+                        const nextEngines = buildPlaybackEngines(s.instanceName, s.params, t, raw) as any;
+                        useRunStore.setState({
+                          engines: nextEngines,
+                          currentTrial: t.trial,
+                          frame: 0,
+                          edgeCache: { 0: { i: new Int32Array(0), j: new Int32Array(0), w: new Float32Array(0), count: 0 }, 1: { i: new Int32Array(0), j: new Int32Array(0), w: new Float32Array(0), count: 0 }, 2: { i: new Int32Array(0), j: new Int32Array(0), w: new Float32Array(0), count: 0 } },
+                          flashCount: { 0: 0, 1: 0, 2: 0 },
+                          status: "running" as const,
+                          preparing: false,
+                        });
+                      }}
+                      className={`w-full text-left text-[11px] rounded px-2 py-1.5 border transition-colors ${isActive ? "bg-green-600/15 border-green-600/40 text-zinc-100" : "bg-zinc-800/40 border-zinc-800 hover:bg-zinc-800 text-zinc-400"}`}
+                    >
+                      <div className="flex justify-between font-medium">
+                        <span>Trial {t.trial + 1}</span>
+                        <span className="text-[10px] text-zinc-500">seed {t.seed}</span>
+                      </div>
+                      <div className="flex gap-2 mt-0.5">
+                        {ALGORITHM_IDS.map((a, i) => (
+                          <span key={a} style={{ color: ALGO_COLORS[a] }} className="truncate">
+                            {ALGO_NAMES[a].split(" ")[0]} {bestPerAlgo[i]}
+                          </span>
+                        ))}
+                      </div>
+                    </button>
+                  );
+                })}
+                {Array.from({ length: Math.max(0, trialCount - trials.length) }).map((_, i) => (
+                  <div
+                    key={`pending-${i}`}
+                    className="text-[11px] rounded px-2 py-1.5 border border-dashed border-zinc-700 text-zinc-600 flex justify-between"
+                  >
+                    <span>Trial {trials.length + i + 1}</span>
+                    <span>pending…</span>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader className="pb-2">

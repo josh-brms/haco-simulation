@@ -74,6 +74,8 @@ interface RunState {
   pythonRunId: number;
   /** Visible Python bridge failure; null when healthy. */
   runError: string | null;
+  /** Non-blocking fetch progress for Python engine (null when not fetching). */
+  pythonFetchProgress: { done: number; total: number } | null;
 
   setInstance: (name: InstanceName) => void;
   setEngine: (engine: EngineType) => void;
@@ -410,6 +412,7 @@ export const useRunStore = create<RunState>((set, get) => ({
   pythonRaw: [],
   pythonRunId: 0,
   runError: null,
+  pythonFetchProgress: null,
 
   setInstance: (name) => {
     if (get().status === "running") return;
@@ -450,6 +453,7 @@ export const useRunStore = create<RunState>((set, get) => ({
       pythonRaw: [],
       pythonRunId: runId,
       runError: null,
+      pythonFetchProgress: null,
     });
 
     // Python engine: mount the visual stage immediately (no blocking
@@ -458,7 +462,7 @@ export const useRunStore = create<RunState>((set, get) => ({
     // animation loop as the TypeScript engine.
     if (state.engine === "python" && isTauri()) {
       const { instanceName, params, trialCount } = state;
-      set({ status: "running", preparing: false });
+      set({ status: "running", preparing: false, pythonFetchProgress: { done: 0, total: trialCount } });
       (async () => {
         try {
           for (let t = 0; t < trialCount; t++) {
@@ -469,6 +473,7 @@ export const useRunStore = create<RunState>((set, get) => ({
             const nextRaw = [...get().pythonRaw];
             nextRaw[t] = results;
             const nextTrials = [...get().trials, completed];
+            const fetchProgress = { done: t + 1, total: trialCount };
             if (t === 0) {
               set({
                 trials: nextTrials,
@@ -478,31 +483,33 @@ export const useRunStore = create<RunState>((set, get) => ({
                 status: "running",
                 currentTrial: 0,
                 frame: 0,
+                pythonFetchProgress: fetchProgress,
               });
             } else {
-              set({ trials: nextTrials, pythonRaw: nextRaw });
-              // If trial-0 playback already finished while waiting on the
-              // fetch loop, complete the run now.
+              set({ trials: nextTrials, pythonRaw: nextRaw, pythonFetchProgress: fetchProgress });
+            }
+            // If all trials are now fetched, complete the run. For the
+            // case where trial-0 playback already finished, this is the
+            // signal to move from background-fetch to completed.
+            if (nextTrials.length >= trialCount) {
               const st = get();
-              const playbackFinished =
-                st.pythonRunId === runId &&
-                st.engine === "python" &&
-                st.status === "paused" &&
-                st.preparing &&
-                st.engines.every((e) => e.done);
-              if (playbackFinished && nextTrials.length >= trialCount) {
-                set({ status: "completed", preparing: false });
+              const playbackDone = st.engines.length > 0 && st.engines.every((e) => e.done);
+              if (playbackDone) {
+                set({ status: "completed", preparing: false, pythonFetchProgress: null });
                 return;
               }
             }
             await new Promise((r) => setTimeout(r, 0));
           }
+          // All trials fetched but playback may still be running — let
+          // advance() handle the final transition to completed.
         } catch (err) {
           if (get().pythonRunId !== runId) return;
           console.error("Python engine error:", err);
           set({
             status: "running",
             preparing: false,
+            pythonFetchProgress: null,
             runError:
               err instanceof Error
                 ? `Python engine failed: ${err.message}`
@@ -546,6 +553,7 @@ export const useRunStore = create<RunState>((set, get) => ({
       pythonRaw: [],
       pythonRunId: s.pythonRunId + 1,
       runError: null,
+      pythonFetchProgress: null,
     }));
   },
 
@@ -553,60 +561,46 @@ export const useRunStore = create<RunState>((set, get) => ({
     const state = get();
     if (state.preparing || state.status !== "running" || state.engines.length === 0) return;
 
-    const { engines, playbackSpeed, currentTrial, trials } = state;
-    const edges = { ...state.edgeCache };
-    const flashes = { ...state.flashCount };
-    let lastFrame = state.frame;
-
-    for (let s = 0; s < playbackSpeed; s++) {
-      let stepped = false;
-      for (const engine of engines) {
-        const snap = engine.step();
-        if (!snap) continue;
-        stepped = true;
-        if (snap.triggerFired) flashes[engine.algo]++;
-        lastFrame = snap.frame;
-      }
-      if (!stepped) break;
-    }
-
-    // render the trails once per tick from the latest pheromone state
-    for (const engine of engines) {
-      edges[engine.algo] = engine.strongEdges();
-    }
-
+    const { engines } = state;
     const isPlayback =
       engines.length > 0 && engines.every((e) => e instanceof PythonPlaybackEngine);
 
+    // Fast path: engines already done (e.g. waiting for background fetch).
+    // For Python playback cycle through every fetched trial sequentially
+    // so the user actually sees all trials, not just trial 0.
     if (engines.every((e) => e.done)) {
-      // Python playback: only trial 0 is animated; the fetch loop owns
-      // every trial in `trials` for stats, so never append here.
-      // Branch on the actual engine objects (not the selected engine) so a
-      // browser fallback run with TS engines still uses the TS path below.
       if (isPlayback) {
-        const runId = get().pythonRunId;
-        if (get().trials.length >= get().trialCount) {
-          set({ edgeCache: edges, flashCount: flashes, frame: lastFrame, status: "completed" });
-        } else {
-          set({ edgeCache: edges, flashCount: flashes, frame: lastFrame, status: "paused", preparing: true });
-          clearPrepareTimer();
-          const pollFetchDone = () => {
-            const s = get();
-            if (s.pythonRunId !== runId || s.engine !== "python") return;
-            if (s.trials.length >= s.trialCount) {
-              set({ status: "completed", preparing: false });
-            } else {
-              clearPrepareTimer();
-              prepareTimer = setTimeout(pollFetchDone, 200);
-            }
-          };
-          prepareTimer = setTimeout(pollFetchDone, 200);
+        const fetched = get().trials.length;
+        const total = get().trialCount;
+        // Last trial finished?
+        if (state.currentTrial + 1 >= total) {
+          // Only complete once all fetches are in — otherwise keep polling
+          // without churn.
+          if (fetched >= total) set({ status: "completed", pythonFetchProgress: null });
+          return;
         }
+        // Try to advance to the next fetched trial.
+        const nextIdx = state.currentTrial + 1;
+        const nextRaw = get().pythonRaw[nextIdx];
+        const nextTrial = get().trials[nextIdx];
+        if (nextRaw && nextTrial) {
+          const nextEngines = buildPlaybackEngines(
+            state.instanceName, state.params, nextTrial, nextRaw
+          ) as unknown as AlgoEngine[];
+          set({
+            engines: nextEngines,
+            currentTrial: nextIdx,
+            frame: 0,
+            edgeCache: emptyEdgeMap(),
+            flashCount: { 0: 0, 1: 0, 2: 0 },
+          });
+        }
+        // If next trial not yet fetched, just wait (no set churn).
         return;
       }
       const completed: CompletedTrial = {
-        trial: currentTrial,
-        seed: state.params.seed + currentTrial,
+        trial: state.currentTrial,
+        seed: state.params.seed + state.currentTrial,
         perAlgo: engines.map((e) => ({
           algo: e.algo,
           bestDist: e.best[e.best.length - 1],
@@ -623,24 +617,17 @@ export const useRunStore = create<RunState>((set, get) => ({
         })),
       };
 
-      const nextTrial = currentTrial + 1;
+      const nextTrial = state.currentTrial + 1;
       const allTrialsDone = nextTrial >= get().trialCount;
 
       if (allTrialsDone) {
         set({
-          edgeCache: edges,
-          flashCount: flashes,
-          frame: lastFrame,
-          trials: [...trials, completed],
+          trials: [...state.trials, completed],
           status: "completed",
         });
       } else {
-        // brief loader between trials while the next engine set is built
         set({
-          edgeCache: edges,
-          flashCount: flashes,
-          frame: lastFrame,
-          trials: [...trials, completed],
+          trials: [...state.trials, completed],
           status: "paused",
           preparing: true,
           currentTrial: nextTrial,
@@ -653,9 +640,122 @@ export const useRunStore = create<RunState>((set, get) => ({
           });
         }, 40);
       }
-    } else {
-      set({ edgeCache: edges, flashCount: flashes, frame: lastFrame });
+      return;
     }
+
+    const { playbackSpeed } = state;
+    const edges = { ...state.edgeCache };
+    const flashes = { ...state.flashCount };
+    let lastFrame = state.frame;
+
+    for (let s = 0; s < playbackSpeed; s++) {
+      let stepped = false;
+      for (const engine of engines) {
+        const snap = engine.step();
+        if (!snap) continue;
+        stepped = true;
+        if (snap.triggerFired) flashes[engine.algo]++;
+        lastFrame = snap.frame;
+      }
+      if (!stepped) break;
+    }
+
+    for (const engine of engines) {
+      edges[engine.algo] = engine.strongEdges();
+    }
+
+    // After stepping, if every engine just finished, finalize the trial
+    // instead of just updating the frame. Saves one extra tick vs. waiting
+    // for the fast-path above on the next frame.
+    if (engines.every((e) => e.done)) {
+      if (isPlayback) {
+        const total = get().trialCount;
+        const fetched = get().trials.length;
+        const nextIdx = state.currentTrial + 1;
+        const isLast = nextIdx >= total;
+        // Always show the last frame's trails for this trial.
+        if (isLast) {
+          if (fetched >= total) {
+            set({ edgeCache: edges, flashCount: flashes, frame: lastFrame, status: "completed", pythonFetchProgress: null });
+          } else {
+            set({ edgeCache: edges, flashCount: flashes, frame: lastFrame });
+          }
+          return;
+        }
+        // Not the last trial: try to roll to the next one immediately so
+        // the user actually sees every trial in sequence.
+        const nextRaw = get().pythonRaw[nextIdx];
+        const nextTrial = get().trials[nextIdx];
+        if (nextRaw && nextTrial) {
+          const nextEngines = buildPlaybackEngines(
+            state.instanceName, state.params, nextTrial, nextRaw
+          ) as unknown as AlgoEngine[];
+          set({
+            engines: nextEngines,
+            currentTrial: nextIdx,
+            frame: 0,
+            edgeCache: emptyEdgeMap(),
+            flashCount: { 0: 0, 1: 0, 2: 0 },
+          });
+        } else {
+          // Next trial not yet fetched — keep scene live and poll.
+          set({ edgeCache: edges, flashCount: flashes, frame: lastFrame });
+        }
+        return;
+      }
+      const completed: CompletedTrial = {
+        trial: state.currentTrial,
+        seed: state.params.seed + state.currentTrial,
+        perAlgo: engines.map((e) => ({
+          algo: e.algo,
+          bestDist: e.best[e.best.length - 1],
+          convergenceIter: e.convergenceIteration(),
+          activations: e.activations,
+          runtimeS: e.runtimeS,
+        })),
+        series: engines.map((e) => ({
+          algo: e.algo,
+          best: [...e.best],
+          entropy: [...e.entropy],
+          dominance: [...e.dominance],
+          triggered: [...e.triggered],
+        })),
+      };
+
+      const nextTrial = state.currentTrial + 1;
+      const allTrialsDone = nextTrial >= get().trialCount;
+
+      if (allTrialsDone) {
+        set({
+          edgeCache: edges,
+          flashCount: flashes,
+          frame: lastFrame,
+          trials: [...state.trials, completed],
+          status: "completed",
+        });
+      } else {
+        set({
+          edgeCache: edges,
+          flashCount: flashes,
+          frame: lastFrame,
+          trials: [...state.trials, completed],
+          status: "paused",
+          preparing: true,
+          currentTrial: nextTrial,
+        });
+        prepareTimer = setTimeout(() => {
+          set({
+            engines: makeEngines(get().instanceName, get().params, get().currentTrial),
+            status: "running",
+            preparing: false,
+          });
+        }, 40);
+      }
+      return;
+    }
+
+    // Normal frame — engines still stepping.
+    set({ edgeCache: edges, flashCount: flashes, frame: lastFrame });
   },
 }));
 

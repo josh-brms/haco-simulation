@@ -213,7 +213,7 @@ export const useSimStore = create<SimState>((set, get) => ({
       phase: phaseFor(engine, snap),
       status: engine.done ? "done" : state.status,
       flashCount: snap.triggerFired ? state.flashCount + 1 : state.flashCount,
-      logs: [...newLogs, ...state.logs].slice(0, 200),
+      logs: newLogs.length > 0 ? [...newLogs, ...state.logs].slice(0, 200) : state.logs,
       vars: {
         entropy: snap.entropy,
         theta: engine.theta,
