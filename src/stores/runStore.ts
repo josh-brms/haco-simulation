@@ -187,7 +187,9 @@ export class PythonPlaybackEngine {
   private readonly fullDominance: number[];
   private readonly fullTriggered: boolean[];
   private readonly totalRuntimeS: number;
-  private readonly emptyTau: Float64Array;
+  
+  // Fake pheromone matrix for visual trails (mimics TS engine)
+  private readonly tau: Float64Array;
 
   constructor(
     algo: AlgoId,
@@ -207,7 +209,16 @@ export class PythonPlaybackEngine {
     this.fullTriggered = series.triggered.slice(0, tMax);
     this.totalRuntimeS = runtimeS;
     this.bestTourAt = reconstructBestTourAt(n, tMax, tourSnapshots, bestTourFinal);
-    this.emptyTau = new Float64Array(n * n);
+    // Initialize tau with pheromone on the initial best tour
+    this.tau = new Float64Array(n * n);
+    if (this.bestTourAt[0] !== -1) {
+      for (let i = 0; i < n; i++) {
+        const u = this.bestTourAt[i];
+        const v = this.bestTourAt[(i + 1) % n];
+        this.tau[u * n + v] += 1.0;
+        this.tau[v * n + u] += 1.0;
+      }
+    }
   }
 
   get done(): boolean {
@@ -241,6 +252,23 @@ export class PythonPlaybackEngine {
     this.dominance.push(pdr);
     this.triggered.push(triggerFired);
     if (triggerFired) this.activations++;
+
+    // Evaporate fake pheromones for visualization
+    for (let i = 0; i < this.tau.length; i++) {
+      this.tau[i] *= 0.85;
+    }
+
+    // Deposit fake pheromones along the best tour so the green web appears
+    const tourOffset = f * this.n;
+    if (this.bestTourAt[tourOffset] !== -1) {
+      for (let i = 0; i < this.n; i++) {
+        const u = this.bestTourAt[tourOffset + i];
+        const v = this.bestTourAt[tourOffset + ((i + 1) % this.n)];
+        this.tau[u * this.n + v] += 1.0;
+        this.tau[v * this.n + u] += 1.0;
+      }
+    }
+
     this.frame++;
     return {
       frame: f,
@@ -249,7 +277,7 @@ export class PythonPlaybackEngine {
       pdr,
       triggerFired,
       bestTour: Int32Array.from(this.bestTourAt.slice(f * this.n, f * this.n + this.n)),
-      tau: this.emptyTau,
+      tau: this.tau,
     };
   }
 
@@ -264,20 +292,37 @@ export class PythonPlaybackEngine {
 
   /** Trails derived from the currently revealed best tour (tour loop edges). */
   strongEdges(cap = 400): EdgeWeights {
-    const f = Math.max(0, Math.min(this.frame, this.tMax) - 1);
-    const slice = this.bestTourAt.slice(f * this.n, f * this.n + this.n);
-    if (!slice.some((v) => v >= 0)) {
-      return { i: new Int32Array(0), j: new Int32Array(0), w: new Float32Array(0), count: 0 };
+    const { n } = this;
+    const idx = new Uint32Array(cap);
+    const val = new Float64Array(cap).fill(-1);
+    let filled = 0;
+
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const w = this.tau[i * n + j] + this.tau[j * n + i];
+        if (w <= 0) continue;
+        if (filled < cap || w > val[filled - 1]) {
+          let pos = filled < cap ? filled++ : cap - 1;
+          while (pos > 0 && val[pos - 1] < w) {
+            idx[pos] = idx[pos - 1];
+            val[pos] = val[pos - 1];
+            pos--;
+          }
+          idx[pos] = i * n + j;
+          val[pos] = w;
+        }
+      }
     }
-    const count = Math.min(this.n, cap);
-    const iOut = new Int32Array(count);
-    const jOut = new Int32Array(count);
-    const wOut = new Float32Array(count).fill(1);
-    for (let k = 0; k < count; k++) {
-      iOut[k] = slice[k];
-      jOut[k] = slice[(k + 1) % this.n];
+
+    const iOut = new Int32Array(filled);
+    const jOut = new Int32Array(filled);
+    const wOut = new Float32Array(filled);
+    for (let k = 0; k < filled; k++) {
+      iOut[k] = (idx[k] / n) | 0;
+      jOut[k] = idx[k] % n;
+      wOut[k] = val[k];
     }
-    return { i: iOut, j: jOut, w: wOut, count };
+    return { i: iOut, j: jOut, w: wOut, count: filled };
   }
 }
 
