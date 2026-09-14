@@ -257,12 +257,16 @@ export class PythonPlaybackEngine {
     this.triggered.push(triggerFired);
     if (triggerFired) this.activations++;
 
-    // Evaporate fake pheromones for visualization
+    // Evaporate the tour bonus but clamp back to the baseline so the
+    // green web stays visible and doesn't fade to nothing or turn white.
+    const BASELINE = 0.15;
     for (let i = 0; i < this.tau.length; i++) {
-      this.tau[i] *= 0.85;
+      if (this.tau[i] > BASELINE) {
+        this.tau[i] = BASELINE + (this.tau[i] - BASELINE) * 0.92;
+      }
     }
 
-    // Deposit fake pheromones along the best tour so the green web appears
+    // Deposit along the best tour so those edges are brightest
     const tourOffset = f * this.n;
     if (this.bestTourAt[tourOffset] !== -1) {
       for (let i = 0; i < this.n; i++) {
