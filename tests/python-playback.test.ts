@@ -110,15 +110,17 @@ describe("PythonPlaybackEngine", () => {
     expect(Array.from(engine.bestTourAt.slice(0, n))).toEqual(raw.tour_snapshots[0]);
     expect(Array.from(engine.bestTourAt.slice(5 * n, 6 * n))).toEqual(raw.tour_snapshots[1]);
 
-    // Trails follow the revealed tour (known from frame 0 here).
+    // Trails: all edges have a small baseline so the web is visible,
+    // tour edges are strongest. For small n all pairs fit under the cap.
     const engine2 = new PythonPlaybackEngine(
       0, n,
       { best: raw.best_history, entropy: raw.entropy_history, dominance: raw.pdr_history, triggered: raw.triggered_history },
       tMax, raw.time_s, tourSnapshots, raw.best_tour_final
     );
-    expect(engine2.strongEdges().count).toBe(n);
+    const allPairs = (n * (n - 1)) / 2;
+    expect(engine2.strongEdges().count).toBe(allPairs);
     engine2.step();
-    expect(engine2.strongEdges().count).toBe(n);
+    expect(engine2.strongEdges().count).toBe(allPairs);
 
     // With no tour data at all, trails stay empty.
     const engine3 = new PythonPlaybackEngine(

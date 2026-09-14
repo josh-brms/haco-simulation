@@ -209,15 +209,19 @@ export class PythonPlaybackEngine {
     this.fullTriggered = series.triggered.slice(0, tMax);
     this.totalRuntimeS = runtimeS;
     this.bestTourAt = reconstructBestTourAt(n, tMax, tourSnapshots, bestTourFinal);
-    // Initialize tau with pheromone on the initial best tour
-    this.tau = new Float64Array(n * n);
+    const nn = n * n;
     if (this.bestTourAt[0] !== -1) {
+      // Small baseline on all edges so the green web is visible beyond
+      // the red tour line. Tour edges get a bonus so they stand out.
+      this.tau = new Float64Array(nn).fill(0.15);
       for (let i = 0; i < n; i++) {
         const u = this.bestTourAt[i];
         const v = this.bestTourAt[(i + 1) % n];
         this.tau[u * n + v] += 1.0;
         this.tau[v * n + u] += 1.0;
       }
+    } else {
+      this.tau = new Float64Array(nn);
     }
   }
 
