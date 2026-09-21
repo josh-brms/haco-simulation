@@ -234,6 +234,13 @@ export default function SimulatePage() {
               version={frame}
               flashFrame={flashCount}
             />
+            {flashCount > 0 && (
+              <div
+                key={flashCount}
+                className="twoopt-burst absolute inset-0 rounded-none"
+                style={{ background: "radial-gradient(ellipse at center, rgba(239,68,68,0.35) 0%, transparent 70%)" }}
+              />
+            )}
             <div className="absolute top-3 left-3 bg-zinc-900/80 backdrop-blur rounded-md px-3 py-1.5 text-xs text-zinc-300 border border-zinc-800">
               {ALGO_NAMES[algo]} &middot; {instanceName} &middot; seed {engine?.params.seed ?? "-"}
             </div>
